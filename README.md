@@ -3,7 +3,7 @@
 [![GoDoc](https://godoc.org/github.com/edadeal/lepus?status.svg)](https://godoc.org/github.com/edadeal/lepus)
 [![Go Report Card](https://goreportcard.com/badge/github.com/edadeal/lepus)](https://goreportcard.com/report/github.com/edadeal/lepus)
 
-Simple wrapper around [streadway/amqp](github.com/streadway/amqp) with syncronous functions.
+Simple wrapper around [streadway/amqp](https://github.com/streadway/amqp) with syncronous functions.
 
 ## Installation
 
