@@ -39,7 +39,8 @@ type Channel struct {
 	retc  chan amqp.Return
 	closc chan *amqp.Error
 
-	sm map[string]*info
+	sm  map[string]*info
+	smu sync.Mutex
 
 	timeout time.Duration
 }
@@ -58,6 +59,7 @@ func SyncChannel(ch *amqp.Channel, err error) (*Channel, error) {
 		Channel:   ch,
 		midPrefix: "lepus-" + strconv.Itoa(int(time.Now().Unix())),
 		sm:        make(map[string]*info),
+		smu:       &sync.Mutex{},
 		timeout:   2 * time.Second,
 	}
 
@@ -131,12 +133,16 @@ func (c *Channel) PublishAndWait(exchange, key string, mandatory, immediate bool
 	mkey := msg.MessageId + msg.CorrelationId
 	tkey := "DeliveryTag-" + strconv.Itoa(int(mid))
 
+	c.smu.Lock()
 	c.sm[mkey] = inf
 	c.sm[tkey] = inf
+	c.smu.Unlock()
 
 	defer func() {
+		c.smu.Lock()
 		delete(c.sm, mkey)
 		delete(c.sm, tkey)
+		c.smu.Unlock()
 	}()
 
 	err := c.Publish(exchange, key, mandatory, immediate, msg)
