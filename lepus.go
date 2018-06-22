@@ -40,7 +40,7 @@ type Channel struct {
 	closc chan *amqp.Error
 
 	sm  map[string]*info
-	smu sync.Mutex
+	smu *sync.Mutex
 
 	timeout time.Duration
 }
