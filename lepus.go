@@ -39,8 +39,7 @@ type Channel struct {
 	retc  chan amqp.Return
 	closc chan *amqp.Error
 
-	sm  map[string]*info
-	smu *sync.Mutex
+	sm sync.Map
 
 	timeout time.Duration
 }
@@ -58,8 +57,6 @@ func SyncChannel(ch *amqp.Channel, err error) (*Channel, error) {
 	c := &Channel{
 		Channel:   ch,
 		midPrefix: "lepus-" + strconv.Itoa(int(time.Now().Unix())),
-		sm:        make(map[string]*info),
-		smu:       &sync.Mutex{},
 		timeout:   2 * time.Second,
 	}
 
@@ -67,7 +64,8 @@ func SyncChannel(ch *amqp.Channel, err error) (*Channel, error) {
 	go func() {
 		for pub := range c.pubc {
 			smkey := "DeliveryTag-" + strconv.Itoa(int(pub.DeliveryTag))
-			if inf, ok := c.sm[smkey]; ok {
+			if iinf, ok := c.sm.Load(smkey); ok {
+				inf := iinf.(*info)
 				swapped := atomic.CompareAndSwapInt32(&inf.state, int32(StateUnknown), int32(StatePublished))
 				if swapped {
 					inf.mu.Unlock()
@@ -80,7 +78,8 @@ func SyncChannel(ch *amqp.Channel, err error) (*Channel, error) {
 	go func() {
 		for ret := range c.retc {
 			smkey := ret.MessageId + ret.CorrelationId
-			if inf, ok := c.sm[smkey]; ok {
+			if iinf, ok := c.sm.Load(smkey); ok {
+				inf := iinf.(*info)
 				swapped := atomic.CompareAndSwapInt32(&inf.state, int32(StateUnknown), int32(StateReturned))
 				if swapped {
 					inf.mu.Unlock()
@@ -92,13 +91,15 @@ func SyncChannel(ch *amqp.Channel, err error) (*Channel, error) {
 	c.closc = ch.NotifyClose(make(chan *amqp.Error))
 	go func() {
 		err := <-c.closc
-		for _, inf := range c.sm {
+		c.sm.Range(func(key, value interface{}) bool {
+			inf := value.(*info)
 			swapped := atomic.CompareAndSwapInt32(&inf.state, int32(StateUnknown), int32(StateClosed))
 			if swapped {
 				inf.err = err
 				inf.mu.Unlock()
 			}
-		}
+			return true
+		})
 	}()
 
 	return c, nil
@@ -133,16 +134,12 @@ func (c *Channel) PublishAndWait(exchange, key string, mandatory, immediate bool
 	mkey := msg.MessageId + msg.CorrelationId
 	tkey := "DeliveryTag-" + strconv.Itoa(int(mid))
 
-	c.smu.Lock()
-	c.sm[mkey] = inf
-	c.sm[tkey] = inf
-	c.smu.Unlock()
+	c.sm.Store(mkey, inf)
+	c.sm.Store(tkey, inf)
 
 	defer func() {
-		c.smu.Lock()
-		delete(c.sm, mkey)
-		delete(c.sm, tkey)
-		c.smu.Unlock()
+		c.sm.Delete(mkey)
+		c.sm.Delete(tkey)
 	}()
 
 	err := c.Publish(exchange, key, mandatory, immediate, msg)
