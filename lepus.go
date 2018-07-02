@@ -174,7 +174,7 @@ func (c *Channel) ConsumeMessages(queue, consumer string, autoAck, exclusive, no
 	go func() {
 		for msg := range d {
 			msg.Acknowledger = c
-			wd <- Delivery{msg}
+			wd <- Delivery{d: msg}
 		}
 	}()
 
@@ -183,13 +183,50 @@ func (c *Channel) ConsumeMessages(queue, consumer string, autoAck, exclusive, no
 
 // Delivery is a superset of amqp.Delivery
 type Delivery struct {
-	amqp.Delivery
+	d     amqp.Delivery
+	acked int32
+}
+
+// Nack is a concurrent safe wrapper around standart AMQP Nack
+func (d *Delivery) Nack(multiple, requeue bool) error {
+	if atomic.CompareAndSwapInt32(&d.acked, 0, 1) {
+		err := d.d.Nack(multiple, requeue)
+		if err != nil {
+			atomic.StoreInt32(&d.acked, 0)
+		}
+		return err
+	}
+	return nil
+}
+
+// Ack is a concurrent safe wrapper around standart AMQP Ack
+func (d *Delivery) Ack(multiple bool) error {
+	if atomic.CompareAndSwapInt32(&d.acked, 0, 1) {
+		err := d.d.Ack(multiple)
+		if err != nil {
+			atomic.StoreInt32(&d.acked, 0)
+		}
+		return err
+	}
+	return nil
+}
+
+// Reject is a concurrent safe wrapper around standart AMQP Reject
+func (d *Delivery) Reject(requeue bool) error {
+	if atomic.CompareAndSwapInt32(&d.acked, 0, 1) {
+		err := d.d.Reject(requeue)
+		if err != nil {
+			atomic.StoreInt32(&d.acked, 0)
+		}
+		return err
+	}
+	return nil
 }
 
 // NackDelayed nacks message without requeue and publishes it again
 // without modification back to tail of queue
 func (d *Delivery) NackDelayed(multiple, mandatory, immediate bool) (State, error) {
-	ch, ok := d.Acknowledger.(*Channel)
+	ch, ok := d.d.Acknowledger.(*Channel)
 	if !ok {
 		return StateUnknown, errors.New("Acknowledger is not of type *lepus.Channel")
 	}
@@ -199,20 +236,20 @@ func (d *Delivery) NackDelayed(multiple, mandatory, immediate bool) (State, erro
 		return StateUnknown, err
 	}
 
-	return ch.PublishAndWait(d.Exchange, d.RoutingKey, mandatory, immediate, amqp.Publishing{
-		Headers:         d.Headers,
-		ContentType:     d.ContentType,
-		ContentEncoding: d.ContentEncoding,
-		DeliveryMode:    d.DeliveryMode,
-		Priority:        d.Priority,
-		CorrelationId:   d.CorrelationId,
-		ReplyTo:         d.ReplyTo,
-		Expiration:      d.Expiration,
-		MessageId:       d.MessageId,
-		Timestamp:       d.Timestamp,
-		Type:            d.Type,
-		UserId:          d.UserId,
-		AppId:           d.AppId,
-		Body:            d.Body,
+	return ch.PublishAndWait(d.d.Exchange, d.d.RoutingKey, mandatory, immediate, amqp.Publishing{
+		Headers:         d.d.Headers,
+		ContentType:     d.d.ContentType,
+		ContentEncoding: d.d.ContentEncoding,
+		DeliveryMode:    d.d.DeliveryMode,
+		Priority:        d.d.Priority,
+		CorrelationId:   d.d.CorrelationId,
+		ReplyTo:         d.d.ReplyTo,
+		Expiration:      d.d.Expiration,
+		MessageId:       d.d.MessageId,
+		Timestamp:       d.d.Timestamp,
+		Type:            d.d.Type,
+		UserId:          d.d.UserId,
+		AppId:           d.d.AppId,
+		Body:            d.d.Body,
 	})
 }
