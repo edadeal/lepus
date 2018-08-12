@@ -23,7 +23,6 @@ const (
 )
 
 type info struct {
-	mu    sync.Mutex
 	state int32
 	err   error
 }
@@ -34,10 +33,6 @@ type Channel struct {
 
 	messageCount uint64
 	midPrefix    string
-
-	pubc  chan amqp.Confirmation
-	retc  chan amqp.Return
-	closc chan *amqp.Error
 
 	sm sync.Map
 
@@ -60,43 +55,36 @@ func SyncChannel(ch *amqp.Channel, err error) (*Channel, error) {
 		timeout:   2 * time.Second,
 	}
 
-	c.pubc = ch.NotifyPublish(make(chan amqp.Confirmation))
 	go func() {
-		for pub := range c.pubc {
+		pubc := ch.NotifyPublish(make(chan amqp.Confirmation))
+		for pub := range pubc {
 			smkey := "DeliveryTag-" + strconv.Itoa(int(pub.DeliveryTag))
-			if iinf, ok := c.sm.Load(smkey); ok {
-				inf := iinf.(*info)
-				swapped := atomic.CompareAndSwapInt32(&inf.state, int32(StateUnknown), int32(StatePublished))
-				if swapped {
-					inf.mu.Unlock()
+			if v, ok := c.sm.Load(smkey); ok {
+				v.(chan info) <- info{
+					state: int32(StatePublished),
 				}
 			}
 		}
 	}()
 
-	c.retc = ch.NotifyReturn(make(chan amqp.Return))
 	go func() {
-		for ret := range c.retc {
+		retc := ch.NotifyReturn(make(chan amqp.Return))
+		for ret := range retc {
 			smkey := ret.MessageId + ret.CorrelationId
-			if iinf, ok := c.sm.Load(smkey); ok {
-				inf := iinf.(*info)
-				swapped := atomic.CompareAndSwapInt32(&inf.state, int32(StateUnknown), int32(StateReturned))
-				if swapped {
-					inf.mu.Unlock()
+			if v, ok := c.sm.Load(smkey); ok {
+				v.(chan info) <- info{
+					state: int32(StateReturned),
 				}
 			}
 		}
 	}()
 
-	c.closc = ch.NotifyClose(make(chan *amqp.Error))
 	go func() {
-		err := <-c.closc
-		c.sm.Range(func(key, value interface{}) bool {
-			inf := value.(*info)
-			swapped := atomic.CompareAndSwapInt32(&inf.state, int32(StateUnknown), int32(StateClosed))
-			if swapped {
-				inf.err = err
-				inf.mu.Unlock()
+		err := <-ch.NotifyClose(make(chan *amqp.Error))
+		c.sm.Range(func(k, v interface{}) bool {
+			v.(chan info) <- info{
+				state: int32(StateClosed),
+				err:   err,
 			}
 			return true
 		})
@@ -125,17 +113,13 @@ func (c *Channel) PublishAndWait(exchange, key string, mandatory, immediate bool
 		msg.CorrelationId = strconv.Itoa(int(mid))
 	}
 
-	inf := &info{
-		state: int32(StateUnknown),
-		mu:    sync.Mutex{},
-	}
-	inf.mu.Lock()
-
 	mkey := msg.MessageId + msg.CorrelationId
 	tkey := "DeliveryTag-" + strconv.Itoa(int(mid))
 
-	c.sm.Store(mkey, inf)
-	c.sm.Store(tkey, inf)
+	sch := make(chan info)
+
+	c.sm.Store(mkey, sch)
+	c.sm.Store(tkey, sch)
 
 	defer func() {
 		c.sm.Delete(mkey)
@@ -147,20 +131,17 @@ func (c *Channel) PublishAndWait(exchange, key string, mandatory, immediate bool
 		return StateUnknown, err
 	}
 
-	go func() {
-		timer := time.NewTimer(c.timeout)
-		defer timer.Stop()
+	timer := time.NewTimer(c.timeout)
+	defer timer.Stop()
 
-		<-timer.C
-		swapped := atomic.CompareAndSwapInt32(&inf.state, int32(StateUnknown), int32(StateTimeout))
-		if swapped {
-			inf.err = errors.New("message publishing timeout reached")
-			inf.mu.Unlock()
+	for {
+		select {
+		case <-timer.C:
+			return StateTimeout, errors.New("message publishing timeout reached")
+		case inf := <-sch:
+			return State(inf.state), inf.err
 		}
-	}()
-
-	inf.mu.Lock()
-	return State(inf.state), inf.err
+	}
 }
 
 // ConsumeMessages returns chan of wrapped messages from queue
