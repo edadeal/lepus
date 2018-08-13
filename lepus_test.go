@@ -112,28 +112,38 @@ func TestPublishAndWaitMultiple(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	wg := &sync.WaitGroup{}
+
 	for i := 0; i < 10; i++ {
-		state, err := ch.PublishAndWait(
-			"",     // exchange
-			"test", // routing key
-			true,   // mandatory
-			false,
-			amqp.Publishing{
-				DeliveryMode: amqp.Persistent,
-				ContentType:  "text/plain",
-				Body:         []byte("Hello, lepus!"),
-			},
-		)
+		wg.Add(1)
 
-		if err != nil {
-			t.Fatal(err)
-		}
+		go func() {
+			defer wg.Done()
 
-		expected := StatePublished
-		if state != expected {
-			t.Fatalf("Expecting state to be %v got %v", expected, state)
-		}
+			state, err := ch.PublishAndWait(
+				"",     // exchange
+				"test", // routing key
+				true,   // mandatory
+				false,
+				amqp.Publishing{
+					DeliveryMode: amqp.Persistent,
+					ContentType:  "text/plain",
+					Body:         []byte("Hello, lepus!"),
+				},
+			)
+
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			expected := StatePublished
+			if state != expected {
+				t.Fatalf("Expecting state to be %v got %v", expected, state)
+			}
+		}()
 	}
+
+	wg.Wait()
 }
 
 func TestConsumeMessages(t *testing.T) {
@@ -167,7 +177,7 @@ func TestConsumeMessages(t *testing.T) {
 	}
 
 	messagesCount := 10
-	wg := sync.WaitGroup{}
+	wg := &sync.WaitGroup{}
 	wg.Add(1)
 
 	go func() {
