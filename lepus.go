@@ -2,24 +2,13 @@ package lepus
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/streadway/amqp"
-)
-
-// State indicates publishing state of message
-type State int32
-
-// states
-const (
-	StateUnknown State = iota
-	StatePublished
-	StateReturned
-	StateTimeout
-	StateClosed
 )
 
 type info struct {
@@ -233,4 +222,17 @@ func (d *Delivery) NackDelayed(multiple, mandatory, immediate bool) (State, erro
 		AppId:           d.Delivery.AppId,
 		Body:            d.Delivery.Body,
 	})
+}
+
+// MustPublish can be used as a wrapper around `PublishAndWait` and
+// `NackDelayed` methods if you didn't want to process error and state
+// separately.
+func MustPublish(s State, err error) error {
+	if err != nil {
+		return err
+	}
+	if s != StatePublished {
+		return fmt.Errorf("Message publishing failed. Result state: %s", s)
+	}
+	return nil
 }
