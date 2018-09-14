@@ -196,17 +196,24 @@ func (d *Delivery) Reject(requeue bool) error {
 // NackDelayed nacks message without requeue and publishes it again
 // without modification back to tail of queue
 func (d *Delivery) NackDelayed(multiple, mandatory, immediate bool) (State, error) {
+	swapped := atomic.CompareAndSwapInt32(&d.acked, 0, 1)
+	if !swapped {
+		return StateAlreadyProcessed, nil
+	}
+
 	ch, ok := d.Delivery.Acknowledger.(*Channel)
 	if !ok {
+		atomic.StoreInt32(&d.acked, 0)
 		return StateUnknown, errors.New("Acknowledger is not of type *lepus.Channel")
 	}
 
 	err := d.Nack(multiple, false)
 	if err != nil {
+		atomic.StoreInt32(&d.acked, 0)
 		return StateUnknown, err
 	}
 
-	return ch.PublishAndWait(d.Delivery.Exchange, d.Delivery.RoutingKey, mandatory, immediate, amqp.Publishing{
+	state, err := ch.PublishAndWait(d.Delivery.Exchange, d.Delivery.RoutingKey, mandatory, immediate, amqp.Publishing{
 		Headers:         d.Delivery.Headers,
 		ContentType:     d.Delivery.ContentType,
 		ContentEncoding: d.Delivery.ContentEncoding,
@@ -222,6 +229,13 @@ func (d *Delivery) NackDelayed(multiple, mandatory, immediate bool) (State, erro
 		AppId:           d.Delivery.AppId,
 		Body:            d.Delivery.Body,
 	})
+
+	if err != nil {
+		atomic.StoreInt32(&d.acked, 0)
+		return StateUnknown, err
+	}
+
+	return state, nil
 }
 
 // MustPublish can be used as a wrapper around `PublishAndWait` and
